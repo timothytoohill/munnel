@@ -17,7 +17,16 @@ pub fn rm_newline(line:String) -> String {
 //returns when '\n' is reached, and it includes '\n'. 
 //requires line_buf is maintained externally (reset when a line is read)
 pub async fn tokio_read_line(stream:&tokio::net::TcpStream, line_bytes:&mut Vec<u8>) -> tokio::io::Result<()> {
+    return tokio_read_line_main(stream, line_bytes, 4096).await;
+}
+
+pub async fn tokio_read_line_main(stream:&tokio::net::TcpStream, line_bytes:&mut Vec<u8>, max_bytes:u64) -> tokio::io::Result<()> {
+    let mut total_read:u64 = 0;
     loop {
+        if (total_read >= max_bytes) {
+            break;
+        }
+
         stream.readable().await?;
 
         let mut buf = vec![0; 1];
@@ -35,6 +44,7 @@ pub async fn tokio_read_line(stream:&tokio::net::TcpStream, line_bytes:&mut Vec<
             Ok(bytes_read) => {
                 if (bytes_read > 0) {
                     line_bytes.push(buf[0]);
+                    total_read = total_read + 1;
                     if (buf[0] == b"\n"[0]) {
                         break;
                     }

@@ -4,7 +4,7 @@ use log::{error, info, warn};
 use crate::constants::*;
 use crate::utils::*;
 
-pub async fn run_agent(group_name:String, endpoint:String) -> io::Result<()> {
+pub async fn run_agent(group_name:String, endpoint:String, pre_shared_key:String) -> io::Result<()> {
     info!("Running in agent mode. Group name: {}, Server Endpoint: {}.", group_name, &endpoint);
 
     loop {
@@ -24,7 +24,7 @@ pub async fn run_agent(group_name:String, endpoint:String) -> io::Result<()> {
                 let mut handshake_complete = false;
 
                 //set up connection with server
-                match writer.write_all((CMD_NEW_AGENT.to_owned() + "\n" + group_name.as_str() + "\n").as_bytes()).await {
+                match writer.write_all((CMD_PSK.to_owned() + "\n" + &pre_shared_key + "\n" + &CMD_NEW_AGENT.to_owned() + "\n" + group_name.as_str() + "\n").as_bytes()).await {
                     Err(e) => {
                         error!("Could not send CMD_NEW_AGENT to server: {}.", e);
                     },

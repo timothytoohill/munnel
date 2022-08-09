@@ -75,11 +75,11 @@ fn main() -> io::Result<()> {
             },
             "agent" => {
                 let tokio_run_time = tokio::runtime::Runtime::new()?;
-                tokio_run_time.block_on(agent::run_agent(moptions.agent_group_name, moptions.agent_server_endpoint))?;
+                tokio_run_time.block_on(agent::run_agent(moptions.agent_group_name, moptions.agent_server_endpoint, moptions.pre_shared_key))?;
             },
             "server" => {
                 let tokio_run_time = tokio::runtime::Runtime::new()?;
-                tokio_run_time.block_on(server::run_server(moptions.server_agent_control_bind_endpoint, moptions.server_configs))?;
+                tokio_run_time.block_on(server::run_server(moptions.server_agent_control_bind_endpoint, moptions.server_configs, moptions.pre_shared_key))?;
             },
             "help" => {
                 configs::show_help()?;

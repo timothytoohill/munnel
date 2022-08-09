@@ -20,7 +20,8 @@ pub struct AppOptions {
     pub agent_server_endpoint:String,
     pub agent_group_name:String,
     pub server_agent_control_bind_endpoint:String,
-    pub server_configs:ServerConfigs
+    pub server_configs:ServerConfigs,
+    pub pre_shared_key:String
 }
 
 pub fn parse_cmd_line() -> io::Result<AppOptions> {
@@ -30,15 +31,36 @@ pub fn parse_cmd_line() -> io::Result<AppOptions> {
     let mut agent_group_name = String::from("");
     let mut server_agent_control_bind_endpoint = String::from(DEFAULT_AGENT_CONTROL_BIND_ENDPOINT);
     let mut server_configs = ServerConfigs::new();
+    let mut pre_shared_key = String::from(DEFAULT_PRE_SHARED_KEY);
 
+    //need to make this better
     if (args.len() > 1) {
         mode = args[1].to_lowercase();
         match mode.as_str() {
             "agent" => {
                 if (args.len() > 2) {
-                    agent_server_endpoint = args[2].clone();
+                    let mut index = 2;
+                    let mut psk = false;
+                    if (args[index].to_uppercase().contains("PSK=")) {
+                        let temp_psk:Vec<&str> = args[index].split("=").collect();
+                        pre_shared_key = temp_psk[1].to_string();
+                        index = index + 1;
+                        psk = true;
+                    } else {
+                        agent_server_endpoint = args[index].clone();
+                        index = index + 1;
+                    }
                     if (args.len() > 3) {
-                        agent_group_name = args[3].clone();
+                        if (psk) {
+                            agent_server_endpoint = args[index].clone();
+                            index = index + 1;
+                            if(args.len() > 4) {
+                                agent_group_name = args[index].clone();
+                            }
+                        } else {
+                            agent_group_name = args[index].clone();
+                            //index = index + 1;
+                        }
                     }
                 } else {
                     show_syntax_error("The server endpoint to which the agent connects must be specified.");
@@ -47,6 +69,11 @@ pub fn parse_cmd_line() -> io::Result<AppOptions> {
             "server" => {
                 if (args.len() > 2) {
                     let mut index = 2;
+                    if (args[index].to_uppercase().contains("PSK=")) { } else {
+                        let temp_psk:Vec<&str> = args[index].split("=").collect();
+                        pre_shared_key = temp_psk[1].to_string();
+                        index = index + 1;
+                    }
                     if (args[index].contains(" ")) { } else {
                         server_agent_control_bind_endpoint = args[index].clone();
                         index = index + 1;
@@ -59,14 +86,14 @@ pub fn parse_cmd_line() -> io::Result<AppOptions> {
                 }
             },
             _ => {
-
+                
             }
         }        
     } else {
         show_syntax_error("The mode must be specified.");
     }
 
-    let moptions = AppOptions {mode, agent_server_endpoint, agent_group_name, server_agent_control_bind_endpoint, server_configs};
+    let moptions = AppOptions {mode, agent_server_endpoint, agent_group_name, server_agent_control_bind_endpoint, server_configs, pre_shared_key};
 
     return Ok(moptions);
 }
@@ -91,9 +118,11 @@ pub fn show_help() -> io::Result<()> {
     println!("To initialize configs:");
     println!("\t{} init", exe_name);
     println!("To run in agent mode:");
-    println!("\t{} agent <SERVER_ADDRESS:PORT_NUMBER> [GROUP_NAME]", exe_name);
+    println!("\t{} agent [PSK=pre_shared_key] <SERVER_ADDRESS:PORT_NUMBER> [GROUP_NAME]", exe_name);
     println!("To run in server mode:");
-    println!("\t{} server [LOCAL_BIND_ADDRESS:PORT_NUMBER] [SERVICE_CONFIGS] [SERVICE_CONFIGS] [...]", exe_name);
+    println!("\t{} server [PSK=pre_shared_key] [LOCAL_BIND_ADDRESS:PORT_NUMBER] [SERVICE_CONFIGS] [SERVICE_CONFIGS] [...]", exe_name);
+    println!("");
+    println!("The pre-shared key is optional. It is a key that can be specified for agents to authenticate to the server. The pre-shared key must not include spaces.");
     println!("");
     println!("If a group name is not specfied for an agent, then it is considered available to handle all service connections.");
     println!("");

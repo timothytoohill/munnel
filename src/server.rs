@@ -32,7 +32,7 @@ The main server event loop. This is where most of the state is housed and mainta
 service-to-agent mappings, etc. Async threads are spawned from here to handle listening sockets and streaming between
 an agent and the client.
 */
-pub async fn run_server(server_agent_control_bind_endpoint:String, cmd_line_server_configs:ServerConfigs) -> io::Result<()> {
+pub async fn run_server(server_agent_control_bind_endpoint:String, cmd_line_server_configs:ServerConfigs, pre_shared_key:String) -> io::Result<()> {
     let endpoint = server_agent_control_bind_endpoint;
   
     //instantiations of state that is used to manage and map agents, connections, and services. channels are used to coordinate state among threads
@@ -77,20 +77,25 @@ pub async fn run_server(server_agent_control_bind_endpoint:String, cmd_line_serv
                             },
                             Ok((stream, address)) => {
                                 info!("Accepted connection on agent control port from: {}.", address);
-                                let new_act_tx = act_tx.clone();
-                                let id = get_rand_guid();
-                                tokio::spawn(async move { 
-                                    agent_control_thread(id.clone(), stream, new_act_tx.clone(), address).await;
+                                if (get_connected_agent_count(&agent_control_threads_by_group_name) >= MAX_AGENT_CONNECTIONS) {
+                                    error!("Closing new agent contorl connection from: {}. Exceeded MAX_AGENT_CONNECTIONS.", address);
+                                } else {
+                                    let new_act_tx = act_tx.clone();
+                                    let id = get_rand_guid();
+                                    let psk = pre_shared_key.clone();
+                                    tokio::spawn(async move { 
+                                        agent_control_thread(id.clone(), stream, new_act_tx.clone(), address, psk).await;
 
-                                    //deregister
-                                    let mcmd = AppCommand{ id: id.clone(), name: String::from(CMD_DEREGISTER), from_address: Some(address), ..AppCommand::default() };
-                                    match new_act_tx.send(mcmd).await {
-                                        Err(e) => {
-                                            error!("Could not send deregister command: {}.", e);
-                                        },
-                                        Ok(_result) => { }
-                                    }
-                                });
+                                        //deregister
+                                        let mcmd = AppCommand{ id: id.clone(), name: String::from(CMD_DEREGISTER), from_address: Some(address), ..AppCommand::default() };
+                                        match new_act_tx.send(mcmd).await {
+                                            Err(e) => {
+                                                error!("Could not send deregister command: {}.", e);
+                                            },
+                                            Ok(_result) => { }
+                                        }
+                                    });
+                                }
                             }
                         }
                     },
@@ -281,7 +286,7 @@ fn load_server_services(cmd_line_server_configs:ServerConfigs) -> io::Result<Ser
 }
 
 //handles a connected agent and sends/receives messages to/from main sever thread
-async fn agent_control_thread(id:String, tcp_stream:TcpStream, act_tx:mpsc::Sender<AppCommand>, address:SocketAddr) {
+async fn agent_control_thread(id:String, tcp_stream:TcpStream, act_tx:mpsc::Sender<AppCommand>, address:SocketAddr, pre_shared_key:String) {
     let shared_stream = SharedTokioStream::new(Mutex::new(tcp_stream));
     let stream = &mut *shared_stream.lock().await;
 
@@ -290,6 +295,9 @@ async fn agent_control_thread(id:String, tcp_stream:TcpStream, act_tx:mpsc::Send
 
     //keep alive timer
     let mut ka_timer = interval(Duration::from_millis(KEEP_ALIVE_INTERVAL_MS)); 
+
+    //indicates agent authenticated with pre shared key
+    let mut agent_authenticated = false;
 
     //indicates agent completed handshake - used for keep alive logic
     let mut agent_ready = false;
@@ -317,106 +325,142 @@ async fn agent_control_thread(id:String, tcp_stream:TcpStream, act_tx:mpsc::Send
                             buf = Vec::new();
                             let line = rm_newline(l);
                             let command = line;
-                            match command.as_str() {
-                                CMD_NEW_AGENT => {
-                                    match tokio_read_line(stream, &mut buf).await {
-                                        Err(e) => {
-                                            error!("Error reading from new agent ({}): {}.", address, e);
-                                            break;
-                                        },
-                                        Ok(()) => {
-                                            let bytes_read = buf.len();
-                                            if (bytes_read > 0) {
-                                                let l = String::from_utf8(buf).unwrap();
-                                                buf = Vec::new();
-                                                let line = rm_newline(l);
-                                                let group_name = line;
-                                                match tokio_write_line(stream, CMD_OK).await {
-                                                    Err(e) => {
-                                                        error!("Error writing CMD_OK to agent {}: {}.", address, e);
+                            if (agent_authenticated) {
+                                match command.as_str() {
+                                    CMD_NEW_AGENT => {
+                                        match tokio_read_line(stream, &mut buf).await {
+                                            Err(e) => {
+                                                error!("Error reading from new agent ({}): {}.", address, e);
+                                                break;
+                                            },
+                                            Ok(()) => {
+                                                let bytes_read = buf.len();
+                                                if (bytes_read > 0) {
+                                                    let l = String::from_utf8(buf).unwrap();
+                                                    buf = Vec::new();
+                                                    let line = rm_newline(l);
+                                                    let group_name = line;
+                                                    match tokio_write_line(stream, CMD_OK).await {
+                                                        Err(e) => {
+                                                            error!("Error writing CMD_OK to agent {}: {}.", address, e);
+                                                            break;
+                                                        },
+                                                        Ok(_result) => { }
+                                                    }
+                                                    let mcmd = AppCommand{ id: id.clone(), name: String::from(CMD_NEW_AGENT), group_name: Some(group_name.clone()), tx: Some(s_tx.clone()), from_address: Some(address), ..AppCommand::default() };
+                                                    match act_tx.send(mcmd).await {
+                                                        Err(e) => {
+                                                            error!("Could not communicate to parent thread ({}): {}.", address, e);
+                                                            break;
+                                                        },
+                                                        Ok(_result) => { }
+                                                    }
+                                                    agent_ready = true;
+                                                } else {
+                                                    warn!("Agent connection closed ({}).", address);
+                                                    break;
+                                                }
+                                            }
+                                        }
+                                    },
+                                    CMD_CONNECT => {
+                                        match tokio_read_line(stream, &mut buf).await {
+                                            Err(e) => {
+                                                error!("Error reading from agent connect ({}): {}.", address, e);
+                                                break;
+                                            },
+                                            Ok(()) => {
+                                                let bytes_read = buf.len();
+                                                if (bytes_read > 0) {
+                                                    let l = String::from_utf8(buf).unwrap();
+                                                    let line = rm_newline(l);
+                                                    let connection_id = line;
+    
+                                                    info!("Handling connection ID {} for agent connection from {}.", connection_id, address);
+    
+                                                    let mcmd = AppCommand{ id: id.clone(), name: String::from(CMD_CONNECT), connection_id: Some(connection_id.clone()), stream: Some(shared_stream.clone()), from_address: Some(address), ..AppCommand::default() };
+                                                    match act_tx.send(mcmd).await {
+                                                        Err(e) => {
+                                                            error!("Could not communicate to parent thread during connect ({}): {}.", address, e);
+                                                        },
+                                                        Ok(_result) => { }
+                                                    }
+                                                    break;
+                                                } else {
+                                                    warn!("Agent ({}) connection closed during connect.", address);
+                                                    break;
+                                                }
+                                            }
+                                        }
+                                    },
+                                    CMD_CANCEL_CONNECTION => {
+                                        match tokio_read_line(stream, &mut buf).await {
+                                            Err(e) => {
+                                                error!("Error reading from agent cancel connection ({}): {}.", address, e);
+                                                break;
+                                            },
+                                            Ok(()) => {
+                                                let bytes_read = buf.len();
+                                                if (bytes_read > 0) {
+                                                    let l = String::from_utf8(buf).unwrap();
+                                                    let line = rm_newline(l);
+                                                    let connection_id = line;
+    
+                                                    info!("Handling cancellation for connection ID {} for agent connection from {}.", connection_id, address);
+    
+                                                    let mcmd = AppCommand{ id: id.clone(), name: String::from(CMD_CANCEL_CONNECTION), connection_id: Some(connection_id.clone()), stream: Some(shared_stream.clone()), from_address: Some(address), ..AppCommand::default() };
+                                                    match act_tx.send(mcmd).await {
+                                                        Err(e) => {
+                                                            error!("Could not communicate to parent thread during connection cancel for connection ID {} ({}): {}.", connection_id, address, e);
+                                                        },
+                                                        Ok(_result) => { }
+                                                    }
+                                                    break;
+                                                } else {
+                                                    warn!("Agent ({}) connection closed.", address);
+                                                    break;
+                                                }
+                                            }
+                                        }
+                                    },
+                                    _ => {
+                                        error!("Unrecognized agent ({}) command: {}. Dropping connection.", address, command);
+                                        break;
+                                    }
+                                }
+                            } else { //not authenticated
+                                match command.as_str() {
+                                    CMD_PSK => {
+                                        match tokio_read_line(stream, &mut buf).await {
+                                            Err(e) => {
+                                                error!("Error reading from agent cancel connection ({}): {}.", address, e);
+                                                break;
+                                            },
+                                            Ok(()) => {
+                                                let bytes_read = buf.len();
+                                                if (bytes_read > 0) {
+                                                    let l = String::from_utf8(buf).unwrap();
+                                                    buf = Vec::new();
+                                                    let line = rm_newline(l);
+                                                    let psk = line;
+
+                                                    if (psk.eq(&pre_shared_key)) {
+                                                        agent_authenticated = true;
+                                                    } else {
+                                                        warn!("Agent ({}) sent wrong pre shared key. Closing connection.", address);
                                                         break;
-                                                    },
-                                                    Ok(_result) => { }
+                                                    }
+                                                } else {
+                                                    warn!("Agent ({}) connection closed.", address);
+                                                    break;
                                                 }
-                                                let mcmd = AppCommand{ id: id.clone(), name: String::from(CMD_NEW_AGENT), group_name: Some(group_name.clone()), tx: Some(s_tx.clone()), from_address: Some(address), ..AppCommand::default() };
-                                                match act_tx.send(mcmd).await {
-                                                    Err(e) => {
-                                                        error!("Could not communicate to parent thread ({}): {}.", address, e);
-                                                        break;
-                                                    },
-                                                    Ok(_result) => { }
-                                                }
-                                                agent_ready = true;
-                                            } else {
-                                                warn!("Agent connection closed ({}).", address);
-                                                break;
                                             }
                                         }
+                                    },
+                                    _ => {
+                                        error!("Agent ({}) tried command {} without first authenticating. Dropping connection.", address, command);
+                                        break;
                                     }
-                                },
-                                CMD_CONNECT => {
-                                    match tokio_read_line(stream, &mut buf).await {
-                                        Err(e) => {
-                                            error!("Error reading from agent connect ({}): {}.", address, e);
-                                            break;
-                                        },
-                                        Ok(()) => {
-                                            let bytes_read = buf.len();
-                                            if (bytes_read > 0) {
-                                                let l = String::from_utf8(buf).unwrap();
-                                                let line = rm_newline(l);
-                                                let connection_id = line;
-
-                                                info!("Handling connection ID {} for agent connection from {}.", connection_id, address);
-
-                                                let mcmd = AppCommand{ id: id.clone(), name: String::from(CMD_CONNECT), connection_id: Some(connection_id.clone()), stream: Some(shared_stream.clone()), from_address: Some(address), ..AppCommand::default() };
-                                                match act_tx.send(mcmd).await {
-                                                    Err(e) => {
-                                                        error!("Could not communicate to parent thread during connect ({}): {}.", address, e);
-                                                    },
-                                                    Ok(_result) => { }
-                                                }
-                                                break;
-                                            } else {
-                                                warn!("Agent ({}) connection closed during connect.", address);
-                                                break;
-                                            }
-                                        }
-                                    }
-                                },
-                                CMD_CANCEL_CONNECTION => {
-                                    match tokio_read_line(stream, &mut buf).await {
-                                        Err(e) => {
-                                            error!("Error reading from agent cancel connection ({}): {}.", address, e);
-                                            break;
-                                        },
-                                        Ok(()) => {
-                                            let bytes_read = buf.len();
-                                            if (bytes_read > 0) {
-                                                let l = String::from_utf8(buf).unwrap();
-                                                let line = rm_newline(l);
-                                                let connection_id = line;
-
-                                                info!("Handling cancellation for connection ID {} for agent connection from {}.", connection_id, address);
-
-                                                let mcmd = AppCommand{ id: id.clone(), name: String::from(CMD_CANCEL_CONNECTION), connection_id: Some(connection_id.clone()), stream: Some(shared_stream.clone()), from_address: Some(address), ..AppCommand::default() };
-                                                match act_tx.send(mcmd).await {
-                                                    Err(e) => {
-                                                        error!("Could not communicate to parent thread during connection cancel for connection ID {} ({}): {}.", connection_id, address, e);
-                                                    },
-                                                    Ok(_result) => { }
-                                                }
-                                                break;
-                                            } else {
-                                                warn!("Agent ({}) connection closed during connect.", address);
-                                                break;
-                                            }
-                                        }
-                                    }
-                                },
-                                _ => {
-                                    error!("Unrecognized agent ({}) command: {}. Dropping connection.", address, command);
-                                    break;
                                 }
                             }
                         } else {
@@ -605,4 +649,12 @@ fn get_service_group_names(service_name:&String, services:&ServerConfigs) -> Vec
     }
     group_names.push(String::from(""));
     return group_names;
+}
+
+fn get_connected_agent_count(agent_control_threads_by_group_name:&AgentControlThreadsByGroupName) -> usize {
+    let mut count:usize = 0;
+    for agent_gn in agent_control_threads_by_group_name.keys() {
+        count += agent_control_threads_by_group_name[agent_gn].len();
+    }
+    return count;
 }
