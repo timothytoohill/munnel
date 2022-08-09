@@ -75,9 +75,11 @@ Munnel was written using Rust v1.56.1 and compiled using Cargo v1.56.0.
 # Motivation
 Munnel is my first Rust application, and throughout my career, I've occaisionally needed its capabilities. Other options weren't viable for me, so I decided to get familiar with Rust by building this application.
 # To Do
+- Improve configuration scheme (config file, command line syntax)
+- Add support for SSL
 - Implement a Web UI to manage Munnel
 - Support hot-reload of configurations
 - Develop a system service to run Munnel on both Linux and Windows systems
 - Test the use of kernel threads for established connections, or a configurable static number of kernel threads that each runs an event loop
 - Implement timeouts for pending connections that do not receive a response from an agent (cover all possible rare scenarios involving connectivity failure)
-- If performance requirements increase, research the use of zero-copy to bypass the kernel for network I/O.
+- If performance requirements increase, research the use of zero-copy to bypass the kernel for network I/O
