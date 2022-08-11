@@ -69,7 +69,7 @@ pub fn parse_cmd_line() -> io::Result<AppOptions> {
             "server" => {
                 if (args.len() > 2) {
                     let mut index = 2;
-                    if (args[index].to_uppercase().contains("PSK=")) { } else {
+                    if (args[index].to_uppercase().contains("PSK=")) {
                         let temp_psk:Vec<&str> = args[index].split("=").collect();
                         pre_shared_key = temp_psk[1].to_string();
                         index = index + 1;
