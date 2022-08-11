@@ -24,4 +24,6 @@ pub const KEEP_ALIVE_INTERVAL_MS:u64 = 5000;
 pub const RECONCILE_INTERVAL_MS:u64 = 1000;
 
 pub const DEFAULT_PRE_SHARED_KEY:&str = "ABC123";
+pub const PSK_AUTH_TIMEOUT_MS:u64 = 5000;
+
 pub const MAX_AGENT_CONNECTIONS:usize = 1000; //added for security. Should be made configurable

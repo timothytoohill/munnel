@@ -1,5 +1,5 @@
 use std::{collections::HashMap, net::SocketAddr};
-use tokio::{io, net::{TcpListener, TcpStream}, sync::{mpsc, Mutex}, time::{interval, Duration}};
+use tokio::{io, net::{TcpListener, TcpStream}, sync::{mpsc, Mutex}, time::{interval, interval_at, Duration, Instant}};
 use log::{error, info, warn};
 
 use crate::configs::*;
@@ -296,6 +296,11 @@ async fn agent_control_thread(id:String, tcp_stream:TcpStream, act_tx:mpsc::Send
     //keep alive timer
     let mut ka_timer = interval(Duration::from_millis(KEEP_ALIVE_INTERVAL_MS)); 
 
+    //authentication timer - closes connection if not authenticated by this time
+    let auth_duration = Duration::from_millis(PSK_AUTH_TIMEOUT_MS);
+    let auth_start = Instant::now() + auth_duration;
+    let mut auth_timer = interval_at(auth_start, auth_duration);
+
     //indicates agent authenticated with pre shared key
     let mut agent_authenticated = false;
 
@@ -310,6 +315,7 @@ async fn agent_control_thread(id:String, tcp_stream:TcpStream, act_tx:mpsc::Send
         let read_line = tokio_read_line(stream, &mut buf);
         let recv_cmd = act_rx.recv();
         let ka_timer_tick = ka_timer.tick();
+        let auth_timer_tick = auth_timer.tick();
 
         tokio::select!(
             result = read_line => {
@@ -479,6 +485,14 @@ async fn agent_control_thread(id:String, tcp_stream:TcpStream, act_tx:mpsc::Send
                         },
                         Ok(_result) => { }
                     }
+                }
+            },
+            _result = auth_timer_tick => {
+                if (agent_authenticated) {
+
+                } else {
+                    error!("Agent ({}) failed to authenticate in time. Closing connection.", address);
+                    break;
                 }
             },
             recv_cmd_option = recv_cmd => {
