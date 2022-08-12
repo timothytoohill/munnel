@@ -88,8 +88,9 @@ pub async fn run_agent(group_name:String, endpoint:String, pre_shared_key:String
                                                                     if (bytes_read > 0) {
                                                                         connection_id = rm_newline(connection_id);
                                                                         let server_endpoint = endpoint.clone();
+                                                                        let psk = pre_shared_key.clone();
                                                                         tokio::spawn(async move {
-                                                                            match proxy_connection(connection_id, server_endpoint, dest_address).await {
+                                                                            match proxy_connection(connection_id, server_endpoint, dest_address, psk).await {
                                                                                 Err(e) => {
                                                                                     error!("Problem during proxy connection: {}.", e);
                                                                                 },
@@ -128,7 +129,7 @@ pub async fn run_agent(group_name:String, endpoint:String, pre_shared_key:String
     }
 }
 
-async fn proxy_connection(connection_id:String, server_endpoint:String, dest_address:String) -> io::Result<()> {
+async fn proxy_connection(connection_id:String, server_endpoint:String, dest_address:String, pre_shared_key:String) -> io::Result<()> {
     match TcpStream::connect(&dest_address).await {
         Err(e) => {
             error!("Error connecting to dest endpoint {} for connection ID {}: {}.", dest_address, connection_id, e);
@@ -150,7 +151,7 @@ async fn proxy_connection(connection_id:String, server_endpoint:String, dest_add
                 Ok(mut server_stream) => {
                     info!("Proxying connection between {} and {} with connection ID {}.", server_endpoint, dest_address, connection_id);
         
-                    let connection_cmd = String::from(CMD_CONNECT) + "\n" + &connection_id + "\n";
+                    let connection_cmd = String::from(CMD_PSK) + "\n" + &pre_shared_key + "\n" + &String::from(CMD_CONNECT) + "\n" + &connection_id + "\n";
                     server_stream.write_all(connection_cmd.as_bytes()).await?;
         
                     tokio::spawn(async move {
