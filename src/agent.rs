@@ -1,4 +1,4 @@
-use tokio::{io, io::{BufReader, AsyncBufReadExt, AsyncWriteExt}, net::{TcpStream}, time::{sleep, Duration}};
+use tokio::{io, io::{BufReader, AsyncBufReadExt, AsyncWriteExt}, net::{TcpStream}, time::{interval, sleep, Duration}};
 use log::{error, info, warn};
 
 use crate::constants::*;
@@ -47,77 +47,96 @@ pub async fn run_agent(group_name:String, endpoint:String, pre_shared_key:String
                                     }
                                 } else {
                                     error!("Agent connection closed.");
-        
                                 }
                             }
                         }
+
+                        //keep alive timer
+                        let mut ka_timer = interval(Duration::from_millis(KEEP_ALIVE_INTERVAL_MS)); 
         
-                        //handle commands from server
+                        //handle commands from server, send keepalive
                         while (handshake_complete) {
                             buf = String::new();
-                            match reader.read_line(&mut buf).await {
-                                Err(e) => {
-                                    error!("Error reading from control connection: {}", e);
-                                    break;
-                                },
-                                Ok(bytes_read) => {
-                                    if (bytes_read > 0) {
-                                        let response = rm_newline(buf);
-                                        match response.as_str() {
-                                            CMD_OK => {
-                                                //do nothing
-                                            },
-                                            CMD_KEEP_ALIVE => {
-                                                //do nothing
-                                            },
-                                            CMD_CONNECT => {
-                                                let mut dest_address = String::new();
-                                                let mut connection_id = String::new();
-                                                match reader.read_line(&mut dest_address).await {
-                                                    Err(e) => {
-                                                        error!("Could not read dest address from connect command: {}.", e);
+
+                            let ka_timer_tick = ka_timer.tick();
+                            let read_line = reader.read_line(&mut buf);
+                    
+                            tokio::select!(
+                                result = read_line => {
+                                    match (result) {
+                                        Err(e) => {
+                                            error!("Error reading from control connection: {}", e);
+                                            break;
+                                        },
+                                        Ok(bytes_read) => {
+                                            if (bytes_read > 0) {
+                                                let response = rm_newline(buf);
+                                                match response.as_str() {
+                                                    CMD_OK => {
+                                                        //do nothing
                                                     },
-                                                    Ok(bytes_read) => {
-                                                        if (bytes_read > 0) {
-                                                            dest_address = rm_newline(dest_address);
-                                                            match reader.read_line(&mut connection_id).await {
-                                                                Err(e) => {
-                                                                    error!("Could not read connection ID from connect command: {}.", e);
-                                                                },
-                                                                Ok(bytes_read) => {
-                                                                    if (bytes_read > 0) {
-                                                                        connection_id = rm_newline(connection_id);
-                                                                        let server_endpoint = endpoint.clone();
-                                                                        let psk = pre_shared_key.clone();
-                                                                        tokio::spawn(async move {
-                                                                            match proxy_connection(connection_id, server_endpoint, dest_address, psk).await {
-                                                                                Err(e) => {
-                                                                                    error!("Problem during proxy connection: {}.", e);
-                                                                                },
-                                                                                Ok(_result) => { }
+                                                    CMD_KEEP_ALIVE => {
+                                                        //do nothing
+                                                    },
+                                                    CMD_CONNECT => {
+                                                        let mut dest_address = String::new();
+                                                        let mut connection_id = String::new();
+                                                        match reader.read_line(&mut dest_address).await {
+                                                            Err(e) => {
+                                                                error!("Could not read dest address from connect command: {}.", e);
+                                                            },
+                                                            Ok(bytes_read) => {
+                                                                if (bytes_read > 0) {
+                                                                    dest_address = rm_newline(dest_address);
+                                                                    match reader.read_line(&mut connection_id).await {
+                                                                        Err(e) => {
+                                                                            error!("Could not read connection ID from connect command: {}.", e);
+                                                                        },
+                                                                        Ok(bytes_read) => {
+                                                                            if (bytes_read > 0) {
+                                                                                connection_id = rm_newline(connection_id);
+                                                                                let server_endpoint = endpoint.clone();
+                                                                                let psk = pre_shared_key.clone();
+                                                                                tokio::spawn(async move {
+                                                                                    match proxy_connection(connection_id, server_endpoint, dest_address, psk).await {
+                                                                                        Err(e) => {
+                                                                                            error!("Problem during proxy connection: {}.", e);
+                                                                                        },
+                                                                                        Ok(_result) => { }
+                                                                                    }
+                                                                                });
+                                                                            } else {
+                                                                                warn!("Connection to server was closed.");
                                                                             }
-                                                                        });
-                                                                    } else {
-                                                                        warn!("Connection to server was closed.");
+                                                                        }
                                                                     }
+                                                                } else {
+                                                                    warn!("Connection to server closed.");
                                                                 }
                                                             }
-                                                        } else {
-                                                            warn!("Connection to server closed.");
                                                         }
+                                                    },
+                                                    _ => {
+                                                        //process_command(&response);
                                                     }
                                                 }
-                                            },
-                                            _ => {
-                                                //process_command(&response);
+                                            } else {
+                                                warn!("Agent control connection closed.");
+                                                break;
                                             }
                                         }
-                                    } else {
-                                        warn!("Agent control connection closed.");
-                                        break;
+                                    }
+                                },
+                                _result = ka_timer_tick => {
+                                    match writer.write_all(CMD_KEEP_ALIVE.as_bytes()).await {
+                                        Err(e) => {
+                                            error!("Could not write keep alive to server ({}): {}.", endpoint, e);
+                                            break;
+                                        },
+                                        Ok(_result) => { }
                                     }
                                 }
-                            }
+                            );
                         }
                     }
                 };

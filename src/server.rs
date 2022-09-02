@@ -333,6 +333,9 @@ async fn agent_control_thread(id:String, tcp_stream:TcpStream, act_tx:mpsc::Send
                             let command = line;
                             if (agent_authenticated) {
                                 match command.as_str() {
+                                    CMD_KEEP_ALIVE => {
+                                        //do nothing
+                                    },
                                     CMD_NEW_AGENT => {
                                         match tokio_read_line(stream, &mut buf).await {
                                             Err(e) => {
@@ -480,7 +483,7 @@ async fn agent_control_thread(id:String, tcp_stream:TcpStream, act_tx:mpsc::Send
                 if (agent_ready) {
                     match tokio_write_line(stream, String::from(CMD_KEEP_ALIVE).as_str()).await {
                         Err(e) => {
-                            error!("Could not write to agent ({}): {}.", address, e);
+                            error!("Could not write keep alive to agent ({}): {}.", address, e);
                             break;
                         },
                         Ok(_result) => { }
